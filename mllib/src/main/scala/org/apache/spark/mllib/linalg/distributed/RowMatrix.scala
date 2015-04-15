@@ -19,21 +19,18 @@ package org.apache.spark.mllib.linalg.distributed
 
 import java.util.Arrays
 
-import scala.collection.mutable.ListBuffer
-
-import breeze.linalg.{DenseMatrix => BDM, DenseVector => BDV, SparseVector => BSV, axpy => brzAxpy,
-  svd => brzSvd}
+import breeze.linalg.{DenseMatrix => BDM, DenseVector => BDV, SparseVector => BSV, axpy => brzAxpy, svd => brzSvd}
 import breeze.numerics.{sqrt => brzSqrt}
 import com.github.fommil.netlib.BLAS.{getInstance => blas}
-
 import org.apache.spark.Logging
-import org.apache.spark.SparkContext._
 import org.apache.spark.annotation.Experimental
 import org.apache.spark.mllib.linalg._
 import org.apache.spark.mllib.stat.{MultivariateOnlineSummarizer, MultivariateStatisticalSummary}
 import org.apache.spark.rdd.RDD
-import org.apache.spark.util.random.XORShiftRandom
 import org.apache.spark.storage.StorageLevel
+import org.apache.spark.util.random.XORShiftRandom
+
+import scala.collection.mutable.ListBuffer
 
 /**
  * :: Experimental ::
@@ -103,6 +100,31 @@ class RowMatrix(
         }
         U
       }, combOp = (U1, U2) => U1 += U2)
+  }
+
+  /**
+   * Public method to multiply A^T A and a Dense vector using the multiplyGramianMatrixBy method
+   * @param vi a Vector element (a dense vector)
+   * @return a dense vector
+   */
+  def atav(vi:Vector):Vector = {
+    val v = vi.toBreeze
+    val n = numCols().toInt
+    val vbr = rows.context.broadcast(v)
+    val result = rows.treeAggregate(BDV.zeros[Double](n))(
+      seqOp = (U, r) => {
+        val rBrz = r.toBreeze
+        val a = rBrz.dot(vbr.value)
+        rBrz match {
+          // use specialized axpy for better performance
+          case _: BDV[_] => brzAxpy(a, rBrz.asInstanceOf[BDV[Double]], U)
+          case _: BSV[_] => brzAxpy(a, rBrz.asInstanceOf[BSV[Double]], U)
+          case _ => throw new UnsupportedOperationException(
+            s"Do not support vector operation from type ${rBrz.getClass.getName}.")
+        }
+        U
+      }, combOp = (U1, U2) => U1 += U2)
+    Vectors.fromBreeze(result)
   }
 
   /**
